@@ -31,11 +31,8 @@ _gAyKeY = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94,
 _gAyIv = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
 _gAyReNa = [61, 61, 119, 78, 49, 107, 68, 79, 120, 89, 68, 78, 53, 65, 68, 79]
 
-# ---------- Get directory of this script (project root) ----------
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# ---------- Token cache (saved in the script's directory) ----------
-TOKEN_FILE = os.path.join(SCRIPT_DIR, "tokens.json")
+# ---------- Token cache in /tmp (writable on Vercel) ----------
+TOKEN_FILE = "/tmp/tokens.json"
 TOKEN_LIFETIME = 5 * 3600  # 5 hours
 
 def _load_tokens():
@@ -52,7 +49,7 @@ def _save_tokens(tokens):
         with open(TOKEN_FILE, 'w') as f:
             json.dump(tokens, f)
     except:
-        pass  # ignore write errors
+        pass  # ignore write errors (should not happen in /tmp)
 
 def _gRaBtHeThInG() -> int:
     try:
@@ -66,7 +63,7 @@ def _sHuFfLeShIt(dAtA: bytes) -> bytes:
     cIpHeR = AES.new(_gAyKeY, AES.MODE_CBC, _gAyIv)
     return cIpHeR.encrypt(pad(dAtA, AES.block_size))
 
-# ---------- JWT fetch (with caching) ----------
+# ---------- JWT fetch (with caching in /tmp) ----------
 def _gEtMyJwT(uId: int, pAsSwOrD: str) -> Optional[str]:
     tokens = _load_tokens()
     uid_str = str(uId)
@@ -76,6 +73,7 @@ def _gEtMyJwT(uId: int, pAsSwOrD: str) -> Optional[str]:
         if now - entry.get("timestamp", 0) < TOKEN_LIFETIME:
             return entry.get("token")
     
+    # Fetch new token
     pArAmS = {
         "guest_uid": str(uId),
         "guest_password": pAsSwOrD
@@ -147,7 +145,8 @@ def send_follow(target_id: int, jwt: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Exception: {str(e)}"
 
-# ---------- Load accounts from accounts.json ----------
+# ---------- Load accounts from accounts.json (in script dir) ----------
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 def load_accounts():
     accounts_path = os.path.join(SCRIPT_DIR, "accounts.json")
     try:
